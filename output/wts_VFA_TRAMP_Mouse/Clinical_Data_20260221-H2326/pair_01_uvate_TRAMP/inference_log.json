@@ -1,0 +1,25 @@
+{
+  "exam_id": "uvate_TRAMP",
+  "amplitude_norm_mode": "robust_peak",
+  "robust_peak_percentile": 99.9,
+  "include_bic_in_peak": false,
+  "robust_peak_value": 146855.43996811312,
+  "legacy_peak_divisor": 1.0,
+  "applied_scale": 1.0138071836652912e-05,
+  "training_peak": 1.488831,
+  "traditional_fitting": {
+    "fitting_time_seconds": 0.7819106578826904,
+    "successful_fits": 0,
+    "total_voxels": 4096,
+    "success_rate_percent": 0.0
+  },
+  "auto_ref": {
+    "warning": "Too few auto-ROI voxels; skipped."
+  },
+  "nawm_calibration_extra": {
+    "info": "Skipped (no NAWM or disabled)."
+  },
+  "nawm_calibration": {
+    "info": "NAWM calibration disabled or mask not provided; skipped."
+  }
+}

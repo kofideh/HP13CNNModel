@@ -1,0 +1,20 @@
+\begin{table}[htbp]
+\centering
+\caption{Coefficient of Determination ($R^2$) with Bootstrap Uncertainties for Neural Network and NLLS Methods}
+\label{tab:r2_uncertainties}
+\begin{tabular}{cccccccc}
+\hline
+\multirow{2}{*}{SNR (Pyr/Lac)} & \multicolumn{3}{c}{Neural Network $R^2$} & & \multicolumn{3}{c}{NLLS $R^2$} \\
+\cline{2-4} \cline{6-8}
+ & $k_{PL}$ & $k_{VE}$ & $v_B$ & & $k_{PL}$ & $k_{VE}$ & $v_B$ \\
+\hline
+35/25 & 0.955 $\pm$ 0.012 & 0.843 $\pm$ 0.044 & 0.622 $\pm$ 0.089 & & 0.347 $\pm$ 0.183 & -0.895 $\pm$ 0.370 & -0.892 $\pm$ 0.414 \\
+\hline
+\end{tabular}
+\begin{tablenotes}
+\small
+\item Uncertainties represent one standard deviation estimated via bootstrap resampling with replacement (B=200 iterations, n=50 samples per iteration).
+\item SNR: Signal-to-noise ratio for pyruvate (Pyr) and lactate (Lac) metabolites.
+\item NLLS: Non-linear least squares fitting method.
+\end{tablenotes}
+\end{table}

@@ -1,0 +1,29 @@
+{
+  "exam_id": "Brain1",
+  "amplitude_norm_mode": "robust_peak",
+  "robust_peak_percentile": 99.9,
+  "include_bic_in_peak": false,
+  "robust_peak_value": 898054.1017572529,
+  "legacy_peak_divisor": 1.0,
+  "applied_scale": 2.1500697967102245e-06,
+  "training_peak": 1.930879,
+  "traditional_fitting": {
+    "fitting_time_seconds": 7143.208530426025,
+    "successful_fits": 13824,
+    "total_voxels": 13824,
+    "success_rate_percent": 100.0
+  },
+  "auto_ref": {
+    "auto_ref_voxels": 1369,
+    "auto_ref_median_pre": 0.07623693346977234,
+    "auto_ref_target_mean": 0.02,
+    "calibration_scale": 0.26234003769222863,
+    "auto_ref_median_post": 0.019999999552965164
+  },
+  "nawm_calibration_extra": {
+    "info": "Skipped (no NAWM or disabled)."
+  },
+  "nawm_calibration": {
+    "info": "NAWM calibration disabled or mask not provided; skipped."
+  }
+}

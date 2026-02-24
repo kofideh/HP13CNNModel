@@ -1,0 +1,29 @@
+{
+  "exam_id": "uvateRatKidneysEPI_exp2_constant",
+  "amplitude_norm_mode": "robust_peak",
+  "robust_peak_percentile": 99.9,
+  "include_bic_in_peak": false,
+  "robust_peak_value": 51747.66528515654,
+  "legacy_peak_divisor": 1.0,
+  "applied_scale": 1.0,
+  "training_peak": 1.0,
+  "traditional_fitting": {
+    "fitting_time_seconds": 3412.336037635803,
+    "successful_fits": 1024,
+    "total_voxels": 1024,
+    "success_rate_percent": 100.0
+  },
+  "auto_ref": {
+    "auto_ref_voxels": 100,
+    "auto_ref_median_pre": 0.013563241809606552,
+    "auto_ref_target_mean": 0.02,
+    "calibration_scale": 1.4745737251277515,
+    "auto_ref_median_post": 0.019999999552965164
+  },
+  "nawm_calibration_extra": {
+    "info": "Skipped (no NAWM or disabled)."
+  },
+  "nawm_calibration": {
+    "info": "NAWM calibration disabled or mask not provided; skipped."
+  }
+}
