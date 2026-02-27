@@ -6,9 +6,10 @@ import torch
 import nibabel as nib
 from sklearn.metrics import r2_score
 from glob import glob
-from hybrid_model_utils import HybridMultiHead
+from hybrid_model_utils import HybridMultiHead, compute_peak_percentile
 from hybrid_model_utils import (load_nifti_series, evaluate_model)
 from measured_pyr_driver_kpl_kve_vb_gain import fit_measured_pyr_driver_kve_vb
+from hybrid_model_utils import compute_robust_alpha, prepare_hybrid_inputs
 
 
 # === Specify dataset ===
@@ -22,7 +23,7 @@ assert len(pyr_files) == len(lac_files), "Must have same number of pyr/lac files
 
 # Load a trained model 
 # weights_dir = "wts_2C_MeasuredAIF_noisestd0.05"
-weights_dir = "noiselevel_0.05_20260221-190658"
+weights_dir = "noiselevel_0.05_20260226-153922"
 weights_path = os.path.join("output", weights_dir, "trained_hybrid_positive.pth")
 training_data_info_path = os.path.join("output", weights_dir, "training_report.md")
 
@@ -84,6 +85,20 @@ def _load_training_config(path):
         except ValueError:
             pass
 
+    m = re.search(r"P_train:\s*([0-9eE\.+-]+)", text)
+    if m:
+        try:
+            cfg["P_TRAIN"] = float(m.group(1))
+        except ValueError:
+            pass
+        
+    m = re.search(r"percentile:\s*([0-9eE\.+-]+)", text)
+    if m:
+        try:
+            cfg["PERCENTILE"] = float(m.group(1))
+        except ValueError:
+            pass
+        
     return cfg
 
 
@@ -93,6 +108,8 @@ PYR_FA_SCHEDULE = _cfg["PYR_FA_SCHEDULE"]
 LAC_FA_SCHEDULE = _cfg["LAC_FA_SCHEDULE"]
 SCAN_TR = _cfg["SCAN_TR"]  # seconds
 # TRAINING_PEAK = _cfg["TRAINING_PEAK"]
+P_train = _cfg["P_TRAIN"]   
+percentile = _cfg["PERCENTILE"]  #
 TRAINING_PEAK = 1
 FINE_TUNE_FACTOR = 1  # If >0, we can apply a modest additional scaling to the inputs to better match the training peak, without losing the sim→clinic consistency of the original robust peak scaling. The model can learn to adjust for this during fine-tuning, and it can help if your data's robust peak is systematically much higher or lower than the training peak.
 
@@ -125,7 +142,7 @@ os.makedirs(save_root, exist_ok=True)
 
 # === Amplitude normalization settings (sim→clinic consistent) ===
 # Choose one: "robust_peak" or "vif_amp"
-amplitude_norm_mode = "robust_peak"
+amplitude_norm_mode = "hybrid_norm"  # "robust_peak", "vif_amp", or None to disable amplitude normalization
 
 # If using robust peak: which channels contribute to the peak?
 include_bic_in_peak = False  # typical: pyr + lac only
@@ -374,7 +391,7 @@ def process_pair(idx, pyr_file, lac_file, nawm_file=None, vif_amp_lookup=None):
                     "legacy_peak_divisor": float(legacy_peak_divisor),
                     "applied_scale": float(scale),
                     "training_peak": float(TRAINING_PEAK)})
-    else:  # VIF-based
+    elif amplitude_norm_mode == "vif_amp":  # VIF-based
         vif_amp = None
         if vif_amp_lookup is not None:
             vif_amp = vif_amp_lookup.get(exam_id)
@@ -389,9 +406,25 @@ def process_pair(idx, pyr_file, lac_file, nawm_file=None, vif_amp_lookup=None):
     # bic_2d = bic.reshape(-1, bic.shape[-1])
     # X_combined = np.stack([pyr_2d, lac_2d, bic_2d], axis=-1)  # (vox, T, 3)
     X_combined = np.stack([pyr_2d, lac_2d], axis=-1)  # (vox, T, 3)
+    
+    P_clin = compute_peak_percentile(
+        X_combined,        # shape (..., T, 2)
+        percentile=percentile,
+        pyr_channel=0,
+        min_peak=1e-6
+    )
+    
+    alpha = P_train / max(P_clin, 1e-8)
 
-    X_raw = X_combined.reshape(X_combined.shape[0], -1).astype(np.float32)
-    X_norm = X_raw.copy().astype(np.float32)
+    # X_raw = X_combined.reshape(X_combined.shape[0], -1).astype(np.float32)
+    # X_norm = X_raw.copy().astype(np.float32)
+    
+    X_norm, X_raw, clin_meta = prepare_hybrid_inputs(
+        X_combined,
+        alpha=alpha,
+        pyr_channel=0,
+        flatten=True
+    )
 
     # === Lazy model init ===
     global model

@@ -4,6 +4,11 @@ import numpy as np
 from hybrid_model_utils import VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
 
 
+DEFAULT_VFA_SCHEDULE = np.array([
+    14.4775, 14.9632, 15.5014, 16.1021, 16.7787, 17.5484, 18.4349, 19.4712,
+    20.7048, 22.2077, 24.0948, 26.5651, 30.0000, 35.2644, 45.0000, 89.9
+], dtype=float)
+
 class TwoCompartmentHPDataGeneratorMeasured:
     """
     Measured-pyruvate driver generator (stable exponential integrator).
@@ -22,8 +27,8 @@ class TwoCompartmentHPDataGeneratorMeasured:
                  r1p_range=(1/30, 1/30),
                  r1l_range=(1/25, 1/25),
                  time_points=None,
-                 flip_angle_pyr_deg=None,
-                 flip_angle_lac_deg=None,
+                 flip_angle_pyr_deg=DEFAULT_VFA_SCHEDULE,
+                 flip_angle_lac_deg=DEFAULT_VFA_SCHEDULE,
                  TR=2.0,
                  seed=None):
         self.rng = np.random.default_rng(seed)
@@ -144,12 +149,6 @@ class TwoCompartmentHPDataGeneratorMeasured:
             if noise_std and noise_std > 0:
                 Sp = Sp + self.rng.normal(0.0, noise_std, size=Sp.shape)
                 Sl = Sl + self.rng.normal(0.0, noise_std, size=Sl.shape)
-                
-                        # 1. Normalization (Peak Pyruvate)
-            pyr_peak = np.max(Sp) if np.max(Sp) > 0 else 1.0
-            Sp_norm = Sp / pyr_peak
-            Sl_norm = Sl / pyr_peak
-            
-            X.append(np.stack([Sp_norm, Sl_norm], axis=1))
+            X.append(np.stack([Sp, Sl], axis=1))
             y.append([p["kpl"], p["kve"], p["vb"]])
         return np.array(X), np.array(y)

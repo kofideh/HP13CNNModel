@@ -1,4 +1,5 @@
 import numpy as np
+from hybrid_model_utils import prepare_hybrid_inputs, compute_peak_percentile
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -23,6 +24,8 @@ AIF_TYPE = 'Measured'  # 'measured' or 'GAMMA-Variate'
 # PYR_FA_SCHEDULE = [11.0] * NUM_TIMEPOINTS 
 # LAC_FA_SCHEDULE = [20.0] * NUM_TIMEPOINTS 
 # SCAN_TR = 5.0  # seconds
+# KPL_MAX = 0.06  # s^-1, reduced from 0.20 to better match the rat kidney data range
+
 
 #for TRAMP Mouse data from doi: 10.1002/mrm.2612
 # NUM_TIMEPOINTS = 16
@@ -40,7 +43,10 @@ NUM_TIMEPOINTS = 25
 PYR_FA_SCHEDULE = [15] * NUM_TIMEPOINTS 
 LAC_FA_SCHEDULE = [15] * NUM_TIMEPOINTS 
 SCAN_TR = 2.0  # seconds
-KPL_MAX = 0.06  # s^-1, reduced from 0.20 to better match the rat kidney data range
+KPL_MIN, KPL_MAX = 0.001, 0.060  # Captures normal tissue and potential pathology
+KVE_MIN, KVE_MAX = 0.010, 0.250  # Matches the higher transport seen in your NLLS maps
+VB_MIN,  VB_MAX  = 0.005, 0.150  # Allows for vascular voxels and partial voluming
+# KPL_MAX = 0.06  # s^-1, reduced from 0.20 to better match the rat kidney data range
 
 
 n_samples = 1000000
@@ -77,13 +83,20 @@ else:
     TR=SCAN_TR
 )
 
-
+# X returned from generator: shape (N, T, 2), RAW signals
+# y labels unchanged
 X, y = generator.generate_dataset(n_samples=n_samples, noise_std=noise_level)
 
-# 2. Split channels
-X_raw = X.copy()  
-X_norm = X 
 
+# Build raw + normalized branches for training
+X_raw, X_norm, prep_stats = prepare_hybrid_inputs(
+    X,
+    alpha=1.0,              # no global scaling during synthetic training
+    pyr_channel=0,
+    flatten=True  # MLP input
+)
+
+print("Training prep:", prep_stats)
 
 
 output_dir = "output"
@@ -112,13 +125,16 @@ for i, sample_idx in enumerate(sample_indices):
     col = i % 3
     
     # Plot pyruvate (channel 0)
-    axes[row, col].plot(time_points, X_raw[sample_idx, :, 0], 'b-', label='Pyruvate (Raw)', linewidth=2)
-    axes[row, col].plot(time_points, X_raw[sample_idx, :, 1], 'r-', label='Lactate (Raw)', linewidth=2)
+    #reshape to (T,) for plotting
+    X_raw_sample = X_raw[sample_idx].reshape(n_timepoints, 2)
+    X_norm_sample = X_norm[sample_idx].reshape(n_timepoints, 2)
+    axes[row, col].plot(time_points, X_raw_sample[:, 0], 'b-', label='Pyruvate (Raw)', linewidth=2)
+    axes[row, col].plot(time_points, X_raw_sample[:, 1], 'r-', label='Lactate (Raw)', linewidth=2)
     
     # Plot normalized on secondary y-axis
     ax2 = axes[row, col].twinx()
-    ax2.plot(time_points, X_norm[sample_idx, :, 0], 'b--', label='Pyruvate (Norm)', alpha=0.7)
-    ax2.plot(time_points, X_norm[sample_idx, :, 1], 'r--', label='Lactate (Norm)', alpha=0.7)
+    ax2.plot(time_points, X_norm_sample[:, 0], 'b--', label='Pyruvate (Norm)', alpha=0.7)
+    ax2.plot(time_points, X_norm_sample[:, 1], 'r--', label='Lactate (Norm)', alpha=0.7)
     
     axes[row, col].set_xlabel('Time (s)')
     axes[row, col].set_ylabel('Raw Signal', color='black')
@@ -159,6 +175,7 @@ plt.tight_layout()
 plt.savefig(os.path.join(run_dir, "X_raw_vs_X_norm_histograms.png"), dpi=150, bbox_inches='tight')
 plt.close()
 
+
 # 3. Flatten inputs
 X_raw_flat = X_raw.reshape(X.shape[0], -1)
 X_norm_flat = X_norm.reshape(X.shape[0], -1)
@@ -166,10 +183,65 @@ X_norm_flat = X_norm.reshape(X.shape[0], -1)
 data_peak = X_raw_flat.max()
 
 
-Xr_train, Xr_temp, Xn_train, Xn_temp, y_train, y_temp = train_test_split(
-    X_raw_flat, X_norm_flat, y, test_size=0.3, random_state=42)
-Xr_val, Xr_test, Xn_val, Xn_test, y_val, y_test = train_test_split(
-    Xr_temp, Xn_temp, y_temp, test_size=0.05, random_state=42)
+# Xr_train, Xr_temp, Xn_train, Xn_temp, y_train, y_temp = train_test_split(
+#     X_raw_flat, X_norm_flat, y, test_size=0.3, random_state=42)
+# Xr_val, Xr_test, Xn_val, Xn_test, y_val, y_test = train_test_split(
+#     Xr_temp, Xn_temp, y_temp, test_size=0.05, random_state=42)
+# N = X_raw.shape[0]
+# idx = np.arange(N)
+
+# idx_train, idx_temp = train_test_split(idx, test_size=0.30, random_state=42, shuffle=True)
+# idx_val, idx_test = train_test_split(idx_temp, test_size=0.50, random_state=42, shuffle=True)  # 70/15/15
+
+# Xr_train, Xr_val, Xr_test = X_raw[idx_train], X_raw[idx_val], X_raw[idx_test]
+# Xn_train, Xn_val, Xn_test = X_norm[idx_train], X_norm[idx_val], X_norm[idx_test]
+# y_train,  y_val,  y_test  = y[idx_train], y[idx_val], y[idx_test]
+# ------------------------------------------------------------
+# X_norm: normalized branch input, shape (N, D)
+# X_raw : raw branch input,        shape (N, D)
+# y     : labels,                 shape (N, n_targets)
+# ------------------------------------------------------------
+
+# Safety checks
+assert len(X_norm) == len(X_raw) == len(y), "X_norm, X_raw, and y must have same length"
+
+N = len(y)
+indices = np.arange(N)
+
+# First split: 70% train, 30% temp
+idx_train, idx_temp = train_test_split(
+    indices,
+    test_size=0.30,
+    random_state=42,
+    shuffle=True
+)
+
+# Second split: split temp equally into 15% val, 15% test
+idx_val, idx_test = train_test_split(
+    idx_temp,
+    test_size=0.50,
+    random_state=42,
+    shuffle=True
+)
+
+# Apply SAME indices to both branches and labels
+Xn_train, Xn_val, Xn_test = X_norm[idx_train], X_norm[idx_val], X_norm[idx_test]
+Xr_train, Xr_val, Xr_test = X_raw[idx_train], X_raw[idx_val], X_raw[idx_test]
+y_train,  y_val,  y_test  = y[idx_train],    y[idx_val],    y[idx_test]
+
+# Optional: print split sizes
+print(f"Train/Val/Test sizes: {len(idx_train)} / {len(idx_val)} / {len(idx_test)}")
+print(f"Fractions: {len(idx_train)/N:.3f} / {len(idx_val)/N:.3f} / {len(idx_test)/N:.3f}")
+
+# Optional but recommended: save indices for exact reproducibility
+split_indices = {
+    "idx_train": idx_train,
+    "idx_val": idx_val,
+    "idx_test": idx_test,
+}
+# Example:
+np.savez("train_val_test_indices_protocol_X.npz", **split_indices)
+
 
 
 # 5. Convert to tensors
@@ -182,6 +254,8 @@ Xn_test_tensor = torch.tensor(Xn_test, dtype=torch.float32)
 y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
 y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
 y_test_tensor = torch.tensor(y_test, dtype=torch.float32)
+
+
 
 
 model = HybridMultiHead(input_dim_raw=X_raw_flat.shape[1], input_dim_norm=X_norm_flat.shape[1])
@@ -338,6 +412,27 @@ lac_signals = X[:, :, 1]
 snr_pyr = np.max(np.abs(pyr_signals), axis=1) / noise_level
 snr_lac = np.max(np.abs(lac_signals), axis=1) / noise_level
 
+# If X_raw_ntc is your RAW training signals before flattening, shape (N, T, 2)
+# Prefer using TRAIN subset only to avoid leakage of validation/test amplitude statistics
+X_train_raw_ntc = X[idx_train]  # assuming X is raw (N, T, 2) before prepare_hybrid_inputs
+
+P_train = compute_peak_percentile(
+    X_train_raw_ntc,
+    percentile=99.9,
+    pyr_channel=0,
+    min_peak=1e-6
+)
+
+calibration_meta = {
+    "P_train": float(P_train),
+    "percentile": 99.9,
+    "pyr_channel": 0,
+    "min_peak": 1e-6,
+    "protocol_name": "TRAMP_VFA",   # change accordingly
+}
+
+print("Training calibration:", calibration_meta)
+
 print("\n--- Step 12: Generate Summary Report ---")
 with open(os.path.join(run_dir, 'training_report.md'), 'w') as f:
     f.write(f"# Hyperpolarized 13C MRI Analysis Demo Summary\n\n")
@@ -361,6 +456,9 @@ with open(os.path.join(run_dir, 'training_report.md'), 'w') as f:
     f.write(f"kPL Range: {KPL_MIN:.3f} - {KPL_MAX:.3f} s^-1\n")
     f.write(f"kVE Range: {KVE_MIN:.3f} - {KVE_MAX:.3f} s^-1\n")
     f.write(f"vB Range: {VB_MIN:.3f} - {VB_MAX:.3f}\n\n")
+    f.write(f"## Calibration Meta\n")
+    for k, v in calibration_meta.items():
+        f.write(f"{k}: {v}\n")
     
     f.write(f"## Training\n")
     f.write(f"Max epochs: {n_epochs}\n")
@@ -386,16 +484,20 @@ with open(os.path.join(run_dir, 'training_report.md'), 'w') as f:
     
         # Display statistics and plot comparison
     f.write("\n=== X_raw Statistics ===\n")
-    f.write(f"Maximum: {np.max(X):.6f}\n")
-    f.write(f"Minimum: {np.min(X):.6f}\n")
-    f.write(f"Mean: {np.mean(X):.6f}\n")
-    f.write(f"Shape: {X.shape}\n")
+    f.write(f"Maximum: {np.max(X_raw):.6f}\n")
+    f.write(f"Minimum: {np.min(X_raw):.6f}\n")
+    f.write(f"Mean: {np.mean(X_raw):.6f}\n")
+    f.write(f"Shape: {X_raw.shape}\n")
 
     f.write("\n=== X_norm Statistics ===\n")
     f.write(f"Maximum: {np.max(X_norm):.6f}\n")
     f.write(f"Minimum: {np.min(X_norm):.6f}\n")
     f.write(f"Mean: {np.mean(X_norm):.6f}\n")
     f.write(f"Shape: {X_norm.shape}\n")
+    
+    
+
+
     
 
     

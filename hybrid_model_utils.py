@@ -117,101 +117,6 @@ def plot_weight_histograms(model):
     
     
 
-# def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveName=None):
-#     """
-#     Generates scatter plots of true vs. predicted values for multiple targets,
-#     after removing samples with NaN values in either y_true or y_pred for each target.
-
-#     Args:
-#         y_true (np.ndarray): Array of true target values, shape (n_samples, n_targets).
-#         y_pred (np.ndarray): Array of predicted target values, shape (n_samples, n_targets).
-#         labels (list, optional): List of string labels for each target.
-#                                  Defaults to ["kpl", "kve", "vb"].
-#         saveName (str, optional): If provided, the plot will be saved to this filename.
-#                                   Otherwise, the plot will be shown. Defaults to None.
-#     """
-#     if not isinstance(y_true, np.ndarray):
-#         y_true = np.array(y_true)
-#     if not isinstance(y_pred, np.ndarray):
-#         y_pred = np.array(y_pred)
-
-#     if y_true.shape != y_pred.shape:
-#         raise ValueError("y_true and y_pred must have the same shape.")
-#     if y_true.ndim == 1: # If 1D, reshape to 2D for consistency
-#         y_true = y_true.reshape(-1, 1)
-#         y_pred = y_pred.reshape(-1, 1)
-#     if len(labels) != y_true.shape[1]:
-#         raise ValueError("Length of labels must match the number of targets (columns in y_true/y_pred).")
-
-    
-#     plt.figure(figsize=(5 * len(labels), 4)) # Adjust figure size based on number of labels
-
-
-#     fontsize = 20
-#     # plt.rcParams.update({'font.size': fontsize, 'axes.titlesize': fontsize, 'axes.labelsize': fontsize,
-#     #                      'xtick.labelsize': fontsize, 'ytick.labelsize': fontsize,
-#     #                      'legend.fontsize': fontsize, 'figure.titlesize': fontsize})
-#     plt.rcParams.update({'font.size': fontsize, 'axes.titlesize': fontsize, 'axes.labelsize': fontsize,
-#                          'legend.fontsize': fontsize})
-#     for i, label in enumerate(labels):
-#         plt.subplot(1, len(labels), i + 1)
-
-#         # Extract current column for true and predicted values
-#         y_true_col = y_true[:, i]
-#         y_pred_col = y_pred[:, i]
-
-#         # Create a mask for non-NaN values in both y_true_col and y_pred_col
-#         # A value is True if BOTH y_true_col and y_pred_col at that index are not NaN
-#         valid_mask = ~np.isnan(y_true_col) & ~np.isnan(y_pred_col)
-
-#         # Apply the mask to get cleaned data
-#         y_true_cleaned = y_true_col[valid_mask]
-#         y_pred_cleaned = y_pred_col[valid_mask]
-
-#         if len(y_true_cleaned) < 2 or len(y_pred_cleaned) < 2:
-#             # Not enough data points to plot or calculate R2 score reliably
-#             plt.title(f"{label} (Not enough data)")
-#             plt.xlabel("True")
-#             plt.ylabel("Predicted")
-#             plt.text(0.5, 0.5, 'Insufficient non-NaN data',
-#                      horizontalalignment='center',
-#                      verticalalignment='center',
-#                      transform=plt.gca().transAxes)
-#             print(f"Skipping plot for '{label}' due to insufficient non-NaN data points after cleaning.")
-#             continue # Skip to the next label
-
-#         # Proceed with plotting and R2 calculation using cleaned data
-#         plt.scatter(y_true_cleaned, y_pred_cleaned, alpha=0.6, label='Predictions')
-
-#         # Plot the y=x line (perfect prediction line)
-#         # Use the min/max of the cleaned true values for the line range
-#         min_val = y_true_cleaned.min()
-#         max_val = y_true_cleaned.max()
-#         plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction (y=x)')
-
-#         # Calculate R2 score using cleaned data
-#         r2 = r2_score(y_true_cleaned, y_pred_cleaned)
-#         plt.title(f"{label} (R²={r2:.2f})", fontsize=12)
-#         plt.xlabel("True Values")
-#         plt.ylabel("Predicted Values")
-#         plt.grid(True, linestyle='--', alpha=0.7)
-#         plt.legend()
-
-#     plt.tight_layout()
-
-#     if saveName:
-#         try:
-#             plt.savefig(saveName, dpi=300, bbox_inches='tight')
-#             print(f"Plot saved to {saveName}")
-#         except Exception as e:
-#             print(f"Error saving plot: {e}")
-#     else:
-#         plt.show()
-
-#     plt.close() # Close the figure to free up memory
-
-
-
 def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveName=None):
     """
     Generates scatter plots of true vs. predicted values for multiple targets,
@@ -310,3 +215,189 @@ def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveNa
         plt.show()
 
     plt.close() # Close the figure to free up memory
+    
+    
+    
+    
+    import numpy as np
+
+# ---------------------------------------------------------------------
+# Hybrid preprocessing utilities (raw branch + per-voxel pyruvate normalization)
+# ---------------------------------------------------------------------
+
+def _flatten_to_ntc(X):
+    """
+    Ensure X is shaped as (N, T, C), where C=2 (pyruvate, lactate).
+    Accepts:
+      - (N, T, 2)
+      - (..., T, 2) and flattens leading dims into N
+    """
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim < 3 or X.shape[-1] != 2:
+        raise ValueError(f"Expected X shape (..., T, 2), got {X.shape}")
+    orig_shape = X.shape
+    X_ntc = X.reshape(-1, X.shape[-2], X.shape[-1])  # (N, T, 2)
+    return X_ntc, orig_shape
+
+
+def compute_peak_percentile(
+    X,
+    percentile=99.9,
+    pyr_channel=0,
+    eps=1e-8,
+    min_peak=None,
+):
+    """
+    Compute a robust percentile of voxelwise pyruvate peaks.
+    Useful for train↔clinical amplitude alignment (alpha scaling).
+
+    Parameters
+    ----------
+    X : array-like
+        Shape (..., T, 2), channels=[pyruvate, lactate]
+    percentile : float
+        e.g., 99.9
+    pyr_channel : int
+        Index of pyruvate channel (default 0)
+    eps : float
+        Numerical floor
+    min_peak : float or None
+        Optional threshold to exclude near-background voxels
+    """
+    X_ntc, _ = _flatten_to_ntc(X)
+    peaks = np.max(X_ntc[:, :, pyr_channel], axis=1)
+
+    if min_peak is None:
+        valid = peaks > eps
+    else:
+        valid = peaks > float(min_peak)
+
+    if not np.any(valid):
+        return 1.0  # safe fallback
+
+    return float(np.percentile(peaks[valid], percentile))
+
+
+def compute_robust_alpha(
+    X_train_raw,
+    X_target_raw,
+    percentile=99.9,
+    pyr_channel=0,
+    eps=1e-8,
+    train_min_peak=None,
+    target_min_peak=None,
+):
+    """
+    Compute global amplitude scale factor:
+        alpha = P_train / P_target
+    where P_* are robust percentiles of voxelwise pyruvate peaks.
+    """
+    P_train = compute_peak_percentile(
+        X_train_raw,
+        percentile=percentile,
+        pyr_channel=pyr_channel,
+        eps=eps,
+        min_peak=train_min_peak,
+    )
+    P_target = compute_peak_percentile(
+        X_target_raw,
+        percentile=percentile,
+        pyr_channel=pyr_channel,
+        eps=eps,
+        min_peak=target_min_peak,
+    )
+
+    alpha = P_train / max(P_target, eps)
+    return float(alpha), float(P_train), float(P_target)
+
+
+def prepare_hybrid_inputs(
+    X,
+    alpha=1.0,
+    pyr_channel=0,
+    eps=1e-8,
+    flatten=True,
+):
+    """
+    Build the two hybrid-model inputs:
+      - raw branch: amplitude-preserving (with optional global alpha scaling)
+      - norm branch: per-voxel pyruvate-peak normalized
+
+    Parameters
+    ----------
+    X : array-like
+        Shape (..., T, 2)
+    alpha : float
+        Global amplitude scale factor (used mainly for clinical inference)
+    pyr_channel : int
+        Index of pyruvate channel (default 0)
+    eps : float
+        Numerical floor
+    flatten : bool
+        If True, outputs (N, T*2) arrays for MLP input
+
+    Returns
+    -------
+    X_norm_out : np.ndarray
+        Normalized branch input (N, T*2) if flatten else (N, T, 2)
+    X_raw_out : np.ndarray
+        Raw branch input (N, T*2) if flatten else (N, T, 2)
+    meta : dict
+        Useful metadata for logging/debugging
+    """
+    X_ntc, orig_shape = _flatten_to_ntc(X)
+
+    # Raw branch (amplitude-preserving, optional global alignment)
+    X_raw = X_ntc * np.float32(alpha)
+
+    # Per-voxel pyruvate-peak normalization for the normalized branch
+    pyr = X_raw[:, :, pyr_channel]                     # (N, T)
+    pyr_peak = np.max(pyr, axis=1)                     # (N,)
+    pyr_peak = np.maximum(pyr_peak, eps)
+
+    X_norm = X_raw / pyr_peak[:, None, None]           # (N, T, 2)
+
+    if flatten:
+        X_raw_out = X_raw.reshape(X_raw.shape[0], -1).astype(np.float32)
+        X_norm_out = X_norm.reshape(X_norm.shape[0], -1).astype(np.float32)
+    else:
+        X_raw_out = X_raw.astype(np.float32)
+        X_norm_out = X_norm.astype(np.float32)
+
+    meta = {
+        "orig_shape": orig_shape,
+        "n_samples": int(X_ntc.shape[0]),
+        "n_timepoints": int(X_ntc.shape[1]),
+        "alpha": float(alpha),
+        "pyr_peak_min": float(np.min(pyr_peak)),
+        "pyr_peak_median": float(np.median(pyr_peak)),
+        "pyr_peak_max": float(np.max(pyr_peak)),
+    }
+
+    # NOTE: order here is (norm, raw) to match existing code convention
+    return X_norm_out, X_raw_out, meta
+
+
+# ---------------------------------------------------------------------
+# Backward-compatible wrappers (keep old function names)
+# ---------------------------------------------------------------------
+
+def preprocess_signals(raw_signals, alpha=1.0, pyr_channel=0):
+    """
+    Backward-compatible wrapper.
+    Returns (norm_flat, raw_flat) for the hybrid model.
+    """
+    x_norm, x_raw, _ = prepare_hybrid_inputs(
+        raw_signals,
+        alpha=alpha,
+        pyr_channel=pyr_channel,
+        flatten=True,
+    )
+    return x_norm, x_raw
+
+
+def reshape_signals(raw_signals, alpha=1.0, pyr_channel=0):
+    """
+    Same behavior as preprocess_signals (kept for compatibility).
+    """
+    return preprocess_signals(raw_signals, alpha=alpha, pyr_channel=pyr_channel)
