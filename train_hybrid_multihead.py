@@ -6,18 +6,21 @@ import torch.optim as optim
 from sklearn.model_selection import train_test_split
 import os
 from datetime import datetime
-from hybrid_model_utils import (
-    HybridMultiHead,
-    VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
-)
+from hybrid_model_utils import HybridMultiHead
+
+# Updated constants for human brain @ 3T
+KPL_MIN, KPL_MAX = 0.001, 0.2  # Captures normal tissue and potential pathology
+KVE_MIN, KVE_MAX = 0.010, 0.3  # Matches the higher transport seen in your NLLS maps
+VB_MIN,  VB_MAX  = 0.005, 0.2  # Allows for vascular voxels and partial voluming
+
 from two_compartment_generator import (
     TwoCompartmentHPDataGenerator
 )   
 from two_compartment_generator_measured import TwoCompartmentHPDataGeneratorMeasured
     
 
-AIF_TYPE = 'Measured'  # 'measured' or 'GAMMA-Variate'
-# AIF_TYPE = 'GAMMA-Variate'  # 'measured' or 'GAMMA-Variate'
+# AIF_TYPE = 'Measured'  # 'measured' or 'GAMMA-Variate'
+AIF_TYPE = 'GAMMA-Variate'  # 'measured' or 'GAMMA-Variate'
 
 #for brain data from doi: 10.1002/hbm.26329
 # NUM_TIMEPOINTS = 12
@@ -28,25 +31,24 @@ AIF_TYPE = 'Measured'  # 'measured' or 'GAMMA-Variate'
 
 
 #for TRAMP Mouse data from doi: 10.1002/mrm.2612
-# NUM_TIMEPOINTS = 16
-# DEFAULT_VFA_SCHEDULE = np.array([
-#     14.4775, 14.9632, 15.5014, 16.1021, 16.7787, 17.5484, 18.4349, 19.4712,
-#     20.7048, 22.2077, 24.0948, 26.5651, 30.0000, 35.2644, 45.0000, 90.0000
-# ], dtype=float)
-
-# PYR_FA_SCHEDULE = DEFAULT_VFA_SCHEDULE
-# LAC_FA_SCHEDULE = DEFAULT_VFA_SCHEDULE
-# SCAN_TR = 2.0  # seconds
+NUM_TIMEPOINTS = 16
+DEFAULT_VFA_SCHEDULE = np.array([
+    14.4775, 14.9632, 15.5014, 16.1021, 16.7787, 17.5484, 18.4349, 19.4712,
+    20.7048, 22.2077, 24.0948, 26.5651, 30.0000, 35.2644, 45.0000, 90.0000
+], dtype=float)
+PYR_FA_SCHEDULE = DEFAULT_VFA_SCHEDULE
+LAC_FA_SCHEDULE = DEFAULT_VFA_SCHEDULE
+SCAN_TR = 2.0  # seconds
 
 # #for rat kidney data from doi: 10.1002/mrm.2612
-NUM_TIMEPOINTS = 25
-PYR_FA_SCHEDULE = [15] * NUM_TIMEPOINTS 
-LAC_FA_SCHEDULE = [15] * NUM_TIMEPOINTS 
-SCAN_TR = 2.0  # seconds
-KPL_MIN, KPL_MAX = 0.001, 0.060  # Captures normal tissue and potential pathology
-KVE_MIN, KVE_MAX = 0.010, 0.250  # Matches the higher transport seen in your NLLS maps
-VB_MIN,  VB_MAX  = 0.005, 0.150  # Allows for vascular voxels and partial voluming
-# KPL_MAX = 0.06  # s^-1, reduced from 0.20 to better match the rat kidney data range
+# NUM_TIMEPOINTS = 25
+# PYR_FA_SCHEDULE = [15] * NUM_TIMEPOINTS 
+# LAC_FA_SCHEDULE = [15] * NUM_TIMEPOINTS 
+# SCAN_TR = 2.0  # seconds
+# KPL_MIN, KPL_MAX = 0.001, 0.060  # Captures normal tissue and potential pathology
+# KVE_MIN, KVE_MAX = 0.010, 0.250  # Matches the higher transport seen in your NLLS maps
+# VB_MIN,  VB_MAX  = 0.005, 0.150  # Allows for vascular voxels and partial voluming
+# # KPL_MAX = 0.06  # s^-1, reduced from 0.20 to better match the rat kidney data range
 
 
 n_samples = 1000000
@@ -96,13 +98,14 @@ X_raw, X_norm, prep_stats = prepare_hybrid_inputs(
     flatten=True  # MLP input
 )
 
+
 print("Training prep:", prep_stats)
 
 
 output_dir = "output"
 os.makedirs(output_dir, exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-run_dir = os.path.join(output_dir, f"noiselevel_{noise_level}_{timestamp}")
+run_dir = os.path.join(output_dir, f"TrainingReport_{timestamp}")
 os.makedirs(run_dir, exist_ok=True)
 
 
@@ -182,26 +185,6 @@ X_norm_flat = X_norm.reshape(X.shape[0], -1)
 
 data_peak = X_raw_flat.max()
 
-
-# Xr_train, Xr_temp, Xn_train, Xn_temp, y_train, y_temp = train_test_split(
-#     X_raw_flat, X_norm_flat, y, test_size=0.3, random_state=42)
-# Xr_val, Xr_test, Xn_val, Xn_test, y_val, y_test = train_test_split(
-#     Xr_temp, Xn_temp, y_temp, test_size=0.05, random_state=42)
-# N = X_raw.shape[0]
-# idx = np.arange(N)
-
-# idx_train, idx_temp = train_test_split(idx, test_size=0.30, random_state=42, shuffle=True)
-# idx_val, idx_test = train_test_split(idx_temp, test_size=0.50, random_state=42, shuffle=True)  # 70/15/15
-
-# Xr_train, Xr_val, Xr_test = X_raw[idx_train], X_raw[idx_val], X_raw[idx_test]
-# Xn_train, Xn_val, Xn_test = X_norm[idx_train], X_norm[idx_val], X_norm[idx_test]
-# y_train,  y_val,  y_test  = y[idx_train], y[idx_val], y[idx_test]
-# ------------------------------------------------------------
-# X_norm: normalized branch input, shape (N, D)
-# X_raw : raw branch input,        shape (N, D)
-# y     : labels,                 shape (N, n_targets)
-# ------------------------------------------------------------
-
 # Safety checks
 assert len(X_norm) == len(X_raw) == len(y), "X_norm, X_raw, and y must have same length"
 
@@ -258,7 +241,12 @@ y_test_tensor = torch.tensor(y_test, dtype=torch.float32)
 
 
 
-model = HybridMultiHead(input_dim_raw=X_raw_flat.shape[1], input_dim_norm=X_norm_flat.shape[1])
+model = HybridMultiHead(input_dim_raw=X_raw_flat.shape[1], 
+                        input_dim_norm=X_norm_flat.shape[1],
+                        vb_range=(VB_MIN, VB_MAX),
+                        kpl_range=(KPL_MIN, KPL_MAX),
+                        kve_range=(KVE_MIN, KVE_MAX)
+                        )
 
 
 criterion = nn.MSELoss()
@@ -343,8 +331,7 @@ if best_model_state is not None:
     model.load_state_dict(best_model_state)
 torch.save(model.state_dict(), model_path)
 # After training
-# torch.save(model.state_dict(), "trained_hybrid_positive.pth")
-print("Saved model with positivity constraints to trained_hybrid_positive.pth")
+print("Saved model with positivity constraints to ", model_path)
 # 8. Evaluation
 model.eval()
 

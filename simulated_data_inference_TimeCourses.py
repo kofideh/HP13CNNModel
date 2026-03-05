@@ -8,7 +8,6 @@ from datetime import datetime
 import pandas as pd
 from hybrid_model_utils import (
     HybridMultiHead, plot_prediction_scatter2,
-    VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
 ) 
 from two_compartment_generator import (
     TwoCompartmentHPDataGenerator, DEFAULT_TR, DEFAULT_NUM_TIMEPOINTS, PYR_FA_SCHEDULE, LAC_FA_SCHEDULE,

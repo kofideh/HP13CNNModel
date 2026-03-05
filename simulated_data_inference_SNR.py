@@ -7,34 +7,70 @@ import pandas as pd
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from hybrid_model_utils import HybridMultiHead, plot_prediction_scatter2
+from hybrid_model_utils import HybridMultiHead, compute_peak_percentile, load_training_config, prepare_hybrid_inputs
+from hybrid_model_utils import (load_nifti_series, evaluate_model)
 from two_compartment_generator import (
-    TwoCompartmentHPDataGenerator, DEFAULT_TR, DEFAULT_NUM_TIMEPOINTS, PYR_FA_SCHEDULE, LAC_FA_SCHEDULE
+    TwoCompartmentHPDataGenerator
 )
-
+from two_compartment_generator_measured import TwoCompartmentHPDataGeneratorMeasured
 
 
 n_samples = 50
-
-
-# 1. Generate data
-time_points=np.arange(0, DEFAULT_NUM_TIMEPOINTS * DEFAULT_TR, DEFAULT_TR) # 16 time points from 0 to 30s with TR=2s
-n_timepoints = len(time_points)
-noise = 0.05  # Example noise level
-generator = TwoCompartmentHPDataGenerator(time_points=time_points)
-X, y = generator.generate_dataset(n_samples=n_samples, noise_std=noise)
-
-# 2. Split channels
-X_raw = X.copy()  # raw data for vb
-X_norm = X 
-n_output_params = 3
-
 output_dir = "output"
 os.makedirs(output_dir, exist_ok=True)
-run_dir = os.path.join(output_dir, "noiselevel_0.05_20260202-210623")
+run_dir = os.path.join(output_dir, "TrainingReport_20260305-055935")
+training_data_info_path = os.path.join(run_dir, "training_report.md")
 weights_path = os.path.join(run_dir, "trained_hybrid_positive.pth")
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 run_dir = os.path.join(run_dir, f"simulatedData_{timestamp}")
 os.makedirs(run_dir, exist_ok=True)
+
+
+_cfg = load_training_config(training_data_info_path)
+NUM_TIMEPOINTS = _cfg["NUM_TIMEPOINTS"]
+PYR_FA_SCHEDULE = _cfg["PYR_FA_SCHEDULE"]
+LAC_FA_SCHEDULE = _cfg["LAC_FA_SCHEDULE"]
+SCAN_TR = _cfg["SCAN_TR"]  # seconds
+P_train = _cfg["P_TRAIN"]  
+percentile = _cfg["PERCENTILE"]  #
+KPL_MIN = _cfg["KPL_MIN"]
+KPL_MAX = _cfg["KPL_MAX"]
+KVE_MIN = _cfg["KVE_MIN"]
+KVE_MAX = _cfg["KVE_MAX"]
+VB_MIN = _cfg["VB_MIN"]
+VB_MAX = _cfg["VB_MAX"]
+
+# 1. Generate data
+time_points=np.arange(0, NUM_TIMEPOINTS * SCAN_TR, SCAN_TR) 
+n_timepoints = len(time_points)
+noise = 0.05  # Example noise level
+generator = TwoCompartmentHPDataGenerator(
+    vb_range=(VB_MIN, VB_MAX),
+    kpl_range=(KPL_MIN, KPL_MAX),
+    kve_range=(KVE_MIN, KVE_MAX),
+    r1p_range=(1/30, 1/30),
+    r1l_range=(1/25, 1/25),
+    time_points=None,                        # inferred from schedule length & TR
+    flip_angle_pyr_deg=PYR_FA_SCHEDULE, # or scalar FAs
+    flip_angle_lac_deg=LAC_FA_SCHEDULE,
+    TR=SCAN_TR
+)
+X, y = generator.generate_dataset(n_samples=n_samples, noise_std=noise)
+   
+P_clin = compute_peak_percentile(
+    X,        # shape (..., T, 2)
+    percentile=percentile,
+    pyr_channel=0,
+    min_peak=1e-6
+)   
+alpha = P_train / max(P_clin, 1e-8)
+X_norm, X_raw, clin_meta = prepare_hybrid_inputs(
+    X,
+    alpha=alpha,
+    pyr_channel=0,
+    flatten=True
+)
+n_output_params = 3
 
 
 
@@ -57,13 +93,16 @@ for i, sample_idx in enumerate(sample_indices):
     col = i % 3
     
     # Plot pyruvate (channel 0)
-    axes[row, col].plot(time_points, X_raw[sample_idx, :, 0], 'b-', label='Pyruvate (Raw)', linewidth=2)
-    axes[row, col].plot(time_points, X_raw[sample_idx, :, 1], 'r-', label='Lactate (Raw)', linewidth=2)
+    #reshape to (T,) for plotting
+    X_raw_sample = X_raw[sample_idx].reshape(n_timepoints, 2)
+    X_norm_sample = X_norm[sample_idx].reshape(n_timepoints, 2)
+    axes[row, col].plot(time_points, X_raw_sample[:, 0], 'b-', label='Pyruvate (Raw)', linewidth=2)
+    axes[row, col].plot(time_points, X_raw_sample[:, 1], 'r-', label='Lactate (Raw)', linewidth=2)
     
     # Plot normalized on secondary y-axis
     ax2 = axes[row, col].twinx()
-    ax2.plot(time_points, X_norm[sample_idx, :, 0], 'b--', label='Pyruvate (Norm)', alpha=0.7)
-    ax2.plot(time_points, X_norm[sample_idx, :, 1], 'r--', label='Lactate (Norm)', alpha=0.7)
+    ax2.plot(time_points, X_norm_sample[:, 0], 'b--', label='Pyruvate (Norm)', alpha=0.7)
+    ax2.plot(time_points, X_norm_sample[:, 1], 'r--', label='Lactate (Norm)', alpha=0.7)
     
     axes[row, col].set_xlabel('Time (s)')
     axes[row, col].set_ylabel('Raw Signal', color='black')
@@ -112,17 +151,20 @@ Xn_test_tensor = torch.tensor(Xn_test, dtype=torch.float32)
 y_test_tensor = torch.tensor(y, dtype=torch.float32)
 
 # 1. Load trained model
-input_dim_raw = 16*2  # e.g., 12 timepoints x 2 channels flattened
-input_dim_norm = 16*2
-model = HybridMultiHead(input_dim_raw=input_dim_raw, input_dim_norm=input_dim_norm)
+input_dim_raw = NUM_TIMEPOINTS*2  # e.g., timepoints x 2 channels (pyr, lac) flattened
+input_dim_norm = NUM_TIMEPOINTS*2  # e.g., timepoints x 2 channels (pyr, lac) flattened
+model = HybridMultiHead(input_dim_norm=input_dim_norm, 
+                    input_dim_raw=input_dim_raw,
+                    vb_range=(VB_MIN, VB_MAX),
+                    kpl_range=(KPL_MIN, KPL_MAX),
+                    kve_range=(KVE_MIN, KVE_MAX)
+                    )
 model.load_state_dict(torch.load(weights_path, map_location=torch.device("cpu")))
 model.eval()
 
 
 noise_levels = [0.02, 0.05, 0.08, 0.10, 0.15, 0.20, 0.50, 1.0]
-# noise_levels = [0.001,0.01, 0.02, 0.05, 0.08, 0.10, 0.15]
 
-# cov shape: (n_noise_levels, model_type(0=NN,1=Traditional), param_index(kPL=0,kVE=1,vB=2))
 cov = np.zeros((len(noise_levels), 2, 3))
 snrs = np.zeros((len(noise_levels), 2))
 # Arrays to hold mean predicted parameters per noise level (NN and Traditional)
@@ -142,8 +184,23 @@ for noise_idx, noise in enumerate(noise_levels):
 
 
     X, y = generator.generate_dataset(n_samples=n_samples, noise_std=noise)
-    X_raw = X.copy()  # raw data for vb
-    X_norm = X 
+    
+    
+    P_clin = compute_peak_percentile(
+        X,        # shape (..., T, 2)
+        percentile=percentile,
+        pyr_channel=0,
+        min_peak=1e-6
+    )   
+    alpha = P_train / max(P_clin, 1e-8)
+    X_norm, X_raw, clin_meta = prepare_hybrid_inputs(
+        X,
+        alpha=alpha,
+        pyr_channel=0,
+        flatten=True
+    )
+    
+    
     # 3. Flatten inputs
     Xr_test = X_raw.reshape(X.shape[0], -1)
     Xn_test = X_norm.reshape(X.shape[0], -1)
@@ -155,8 +212,10 @@ for noise_idx, noise in enumerate(noise_levels):
     lac_signals = X[:, :, 1]
 
     # Compute SNR as maximum amplitude divided by noise std
-    snr_pyr = np.max(np.abs(pyr_signals), axis=1) / noise
-    snr_lac = np.max(np.abs(lac_signals), axis=1) / noise
+    # snr_pyr = np.max(np.abs(pyr_signals), axis=1) / noise
+    # snr_lac = np.max(np.abs(lac_signals), axis=1) / noise
+    snr_pyr = np.max(np.abs(pyr_signals)) / noise
+    snr_lac = np.max(np.abs(lac_signals)) / noise
     snrs[noise_idx, 0] = snr_pyr
     snrs[noise_idx, 1] = snr_lac
 

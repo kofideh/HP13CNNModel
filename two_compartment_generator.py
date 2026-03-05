@@ -2,18 +2,10 @@ import numpy as np
 from scipy.integrate import odeint
 
 
-from hybrid_model_utils import VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
-
-
-DEFAULT_TR = 2.0  # seconds
-DEFAULT_NUM_TIMEPOINTS = 25
-# This import can stay (used elsewhere in your codebase), but we won't rely on it here.
-# from fit_two_compartment import rf_loss  
-
-
-DEFAULT_PYR_FA_SCHEDULE = [15.0] * DEFAULT_NUM_TIMEPOINTS  # simpler constant FA schedule
-DEFAULT_LAC_FA_SCHEDULE = [15.0] * DEFAULT_NUM_TIMEPOINTS  # simpler constant FA schedule
-
+# from hybrid_model_utils import VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
+# KPL_MIN, KPL_MAX = 0.001, 0.20
+# KVE_MIN, KVE_MAX = 0.05, 0.45
+# VB_MIN,  VB_MAX =  0.03, 0.18
 def generate_variable_aif_params():
     return {'t0': 0, 'alpha': 3.0, 'beta': 1.0}
 # def generate_variable_aif_params(rng=None):
@@ -39,12 +31,12 @@ class TwoCompartmentHPDataGenerator:
     """
 
     def __init__(self,
-                 vb_range=(VB_MIN, VB_MAX), kpl_range=(KPL_MIN, KPL_MAX), kve_range=(KVE_MIN, KVE_MAX),
+                 vb_range=None, kpl_range=None, kve_range=None,
                  r1p_range=(1/30, 1/30), r1l_range=(1/25, 1/25),
                  time_points=None,
-                 flip_angle_pyr_deg=DEFAULT_PYR_FA_SCHEDULE,
-                 flip_angle_lac_deg=DEFAULT_LAC_FA_SCHEDULE,
-                 TR=DEFAULT_TR,
+                 flip_angle_pyr_deg=None,
+                 flip_angle_lac_deg=None,
+                 TR=None,
                  rng=None,
                  seed=None):
         self.vb_range = vb_range

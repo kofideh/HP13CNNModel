@@ -1,4 +1,6 @@
 
+import re
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,17 +8,25 @@ import nibabel as nib
 import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score
 from pathlib import Path
+import os
 
 # KPL_MIN, KPL_MAX = 0.01, 0.20
 # KVE_MIN, KVE_MAX = 0.05, 0.45
 # VB_MIN,  VB_MAX  = 0.01, 0.50
 
-KPL_MIN, KPL_MAX = 0.001, 0.20
-KVE_MIN, KVE_MAX = 0.05, 0.45
-VB_MIN,  VB_MAX =  0.03, 0.18
+# KPL_MIN, KPL_MAX = 0.001, 0.20
+# KVE_MIN, KVE_MAX = 0.05, 0.45
+# VB_MIN,  VB_MAX =  0.03, 0.18
 
 class HybridMultiHead(nn.Module):
-    def __init__(self, input_dim_raw, input_dim_norm):
+    def __init__(
+        self,
+        input_dim_raw,
+        input_dim_norm,
+        vb_range=None,
+        kpl_range=None,
+        kve_range=None,
+    ):
         super(HybridMultiHead, self).__init__()
         self.shared = nn.Sequential(
             nn.Linear(input_dim_norm, 128),
@@ -44,6 +54,17 @@ class HybridMultiHead(nn.Module):
             nn.Sigmoid()
         )
 
+        # Cache parameter bounds as buffers so they follow the model to GPU/CPU
+        vb_min, vb_max = vb_range
+        kpl_min, kpl_max = kpl_range
+        kve_min, kve_max = kve_range
+        self.register_buffer("vb_min", torch.tensor([vb_min], dtype=torch.float32))
+        self.register_buffer("vb_span", torch.tensor([vb_max - vb_min], dtype=torch.float32))
+        self.register_buffer("kpl_min", torch.tensor([kpl_min], dtype=torch.float32))
+        self.register_buffer("kpl_span", torch.tensor([kpl_max - kpl_min], dtype=torch.float32))
+        self.register_buffer("kve_min", torch.tensor([kve_min], dtype=torch.float32))
+        self.register_buffer("kve_span", torch.tensor([kve_max - kve_min], dtype=torch.float32))
+
 
     def forward(self, x_norm, x_raw):
         shared_out = self.shared(x_norm)
@@ -51,9 +72,9 @@ class HybridMultiHead(nn.Module):
         kve_hat = self.kve_head(shared_out)      # in (0,1)
         vb_hat = self.vb_head(torch.cat([shared_out, x_raw], dim=1))# in (0,1)
 
-        kpl = KPL_MIN + kpl_hat * (KPL_MAX - KPL_MIN)
-        kve = KVE_MIN + kve_hat * (KVE_MAX - KVE_MIN)
-        vb  = VB_MIN  + vb_hat  * (VB_MAX  - VB_MIN)
+        kpl = self.kpl_min + kpl_hat * self.kpl_span
+        kve = self.kve_min + kve_hat * self.kve_span
+        vb  = self.vb_min  + vb_hat  * self.vb_span
         return torch.cat([kpl, kve, vb], dim=1)
 
 
@@ -217,10 +238,6 @@ def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveNa
     plt.close() # Close the figure to free up memory
     
     
-    
-    
-    import numpy as np
-
 # ---------------------------------------------------------------------
 # Hybrid preprocessing utilities (raw branch + per-voxel pyruvate normalization)
 # ---------------------------------------------------------------------
@@ -283,7 +300,6 @@ def compute_robust_alpha(
     X_target_raw,
     percentile=99.9,
     pyr_channel=0,
-    eps=1e-8,
     train_min_peak=None,
     target_min_peak=None,
 ):
@@ -355,8 +371,8 @@ def prepare_hybrid_inputs(
     pyr_peak = np.max(pyr, axis=1)                     # (N,)
     pyr_peak = np.maximum(pyr_peak, eps)
 
-    X_norm = X_raw / pyr_peak[:, None, None]           # (N, T, 2)
-
+    # X_norm = X_raw / pyr_peak[:, None, None]           # (N, T, 2)
+    X_norm = X_raw 
     if flatten:
         X_raw_out = X_raw.reshape(X_raw.shape[0], -1).astype(np.float32)
         X_norm_out = X_norm.reshape(X_norm.shape[0], -1).astype(np.float32)
@@ -401,3 +417,112 @@ def reshape_signals(raw_signals, alpha=1.0, pyr_channel=0):
     Same behavior as preprocess_signals (kept for compatibility).
     """
     return preprocess_signals(raw_signals, alpha=alpha, pyr_channel=pyr_channel)
+
+
+
+def _parse_schedule(text, key):
+    match = re.search(rf"{key}:\s*\[([^\]]+)\]", text)
+    if not match:
+        return None
+    # Accept comma or whitespace-separated lists inside the brackets
+    raw = match.group(1)
+    tokens = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", raw)
+    if not tokens:
+        return None
+    try:
+        return [float(v) for v in tokens]
+    except ValueError:
+        return None
+
+
+def _parse_range(text, label):
+    """Parse lines like 'kPL Range: 0.001 - 0.200 s^-1'."""
+    pattern = rf"{label}\s*:\s*([-+]?[0-9eE\.+-]+)\s*[-\u2013]\s*([-+]?[0-9eE\.+-]+)"
+    m = re.search(pattern, text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        lo = float(m.group(1))
+        hi = float(m.group(2))
+        return lo, hi
+    except ValueError:
+        return None
+
+
+def load_training_config(path):
+    """Load basic timing/flip info from the training report if present."""
+    defaults = {
+        "NUM_TIMEPOINTS": 12,
+        "PYR_FA_SCHEDULE": [11.0] * 12,
+        "LAC_FA_SCHEDULE": [80.0] * 12,
+        "SCAN_TR": 5.0,
+        "TRAINING_PEAK": 0.151621,
+        "KPL_MIN": None,
+        "KPL_MAX": None,
+        "KVE_MIN": None,
+        "KVE_MAX": None,
+        "VB_MIN": None,
+        "VB_MAX": None,
+    }
+    if not os.path.exists(path):
+        print(f"Warning: training info not found at {path}; using defaults.")
+        return defaults
+
+    with open(path, "r") as f:
+        text = f.read()
+
+    cfg = dict(defaults)
+
+    m = re.search(r"NUM_TIME_POINTS:\s*([0-9]+)", text)
+    if m:
+        cfg["NUM_TIMEPOINTS"] = int(m.group(1))
+
+    m = re.search(r"SCAN_TR\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if m:
+        try:
+            cfg["SCAN_TR"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    sched = _parse_schedule(text, "PYR_FA_SCHEDULE")
+    if sched:
+        cfg["PYR_FA_SCHEDULE"] = sched
+
+    sched = _parse_schedule(text, "LAC_FA_SCHEDULE")
+    if sched:
+        cfg["LAC_FA_SCHEDULE"] = sched
+
+    m = re.search(r"TRAINING_PEAK:\s*([0-9eE\.+-]+)", text)
+    if m:
+        try:
+            cfg["TRAINING_PEAK"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    m = re.search(r"P_train:\s*([0-9eE\.+-]+)", text)
+    if m:
+        try:
+            cfg["P_TRAIN"] = float(m.group(1))
+        except ValueError:
+            pass
+        
+    m = re.search(r"percentile:\s*([0-9eE\.+-]+)", text)
+    if m:
+        try:
+            cfg["PERCENTILE"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    ranges = {
+        "kPL Range": ("KPL_MIN", "KPL_MAX"),
+        "kVE Range": ("KVE_MIN", "KVE_MAX"),
+        "vB Range": ("VB_MIN", "VB_MAX"),
+    }
+
+    for label, (lo_key, hi_key) in ranges.items():
+        parsed = _parse_range(text, label)
+        if parsed:
+            cfg[lo_key], cfg[hi_key] = parsed
+        
+    return cfg
+    

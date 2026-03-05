@@ -1,7 +1,7 @@
 
 import numpy as np
 
-from hybrid_model_utils import VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
+# from hybrid_model_utils import VB_MIN, VB_MAX, KPL_MIN, KPL_MAX, KVE_MIN, KVE_MAX
 
 
 DEFAULT_VFA_SCHEDULE = np.array([
@@ -21,17 +21,15 @@ class TwoCompartmentHPDataGeneratorMeasured:
     RF loss per TR: RF = -ln(max(cos(theta), eps)) / TR, with theta capped < 90 deg.
     """
     def __init__(self,
-                 vb_range=(VB_MIN, VB_MAX),
-                 kpl_range=(KPL_MIN, KPL_MAX),
-                 kve_range=(KVE_MIN, KVE_MAX),
-                 r1p_range=(1/30, 1/30),
-                 r1l_range=(1/25, 1/25),
-                 time_points=None,
-                 flip_angle_pyr_deg=DEFAULT_VFA_SCHEDULE,
-                 flip_angle_lac_deg=DEFAULT_VFA_SCHEDULE,
-                 TR=2.0,
-                 seed=None):
-        self.rng = np.random.default_rng(seed)
+                vb_range=None, kpl_range=None, kve_range=None,
+                r1p_range=(1/30, 1/30), r1l_range=(1/25, 1/25),
+                time_points=None,
+                flip_angle_pyr_deg=None,
+                flip_angle_lac_deg=None,
+                TR=None,
+                rng=None,
+                seed=None):
+        self.rng = rng if rng is not None else np.random.RandomState(seed)
         self.vb_range = vb_range
         self.kpl_range = kpl_range
         self.kve_range = kve_range

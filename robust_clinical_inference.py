@@ -6,103 +6,28 @@ import torch
 import nibabel as nib
 from sklearn.metrics import r2_score
 from glob import glob
-from hybrid_model_utils import HybridMultiHead, compute_peak_percentile
+from hybrid_model_utils import HybridMultiHead, compute_peak_percentile, load_training_config, prepare_hybrid_inputs
 from hybrid_model_utils import (load_nifti_series, evaluate_model)
 from measured_pyr_driver_kpl_kve_vb_gain import fit_measured_pyr_driver_kve_vb
-from hybrid_model_utils import compute_robust_alpha, prepare_hybrid_inputs
 
 
 # === Specify dataset ===
 # pyr_files = sorted(glob("data/pyr*Brain1.nii.gz"))
 # lac_files = sorted(glob("data/lac*Brain1.nii.gz"))
-# pyr_files = sorted(glob("data/pyruvate_TRAMP.nii.gz"))
-# lac_files = sorted(glob("data/lactate_TRAMP.nii.gz"))
-pyr_files = sorted(glob("data/pyruvateRatKidneysEPI_exp2_constant.nii.gz"))
-lac_files = sorted(glob("data/lactateRatKidneysEPI_exp2_constant.nii.gz"))
+pyr_files = sorted(glob("data/pyruvate_TRAMP.nii.gz"))
+lac_files = sorted(glob("data/lactate_TRAMP.nii.gz"))
+# pyr_files = sorted(glob("data/pyruvateRatKidneysEPI_exp2_constant.nii.gz"))
+# lac_files = sorted(glob("data/lactateRatKidneysEPI_exp2_constant.nii.gz"))
 assert len(pyr_files) == len(lac_files), "Must have same number of pyr/lac files."
 
 # Load a trained model 
 # weights_dir = "wts_2C_MeasuredAIF_noisestd0.05"
-weights_dir = "noiselevel_0.05_20260226-153922"
+weights_dir = "noiselevel_0.05_20260304-171703"
 weights_path = os.path.join("output", weights_dir, "trained_hybrid_positive.pth")
 training_data_info_path = os.path.join("output", weights_dir, "training_report.md")
 
 
-def _parse_schedule(text, key):
-    match = re.search(rf"{key}:\s*\[([^\]]+)\]", text)
-    if not match:
-        return None
-    vals = [v.strip() for v in match.group(1).split(',') if v.strip()]
-    if not vals:
-        return None
-    try:
-        return [float(v) for v in vals]
-    except ValueError:
-        return None
-
-
-def _load_training_config(path):
-    """Load basic timing/flip info from the training report if present."""
-    defaults = {
-        "NUM_TIMEPOINTS": 12,
-        "PYR_FA_SCHEDULE": [11.0] * 12,
-        "LAC_FA_SCHEDULE": [80.0] * 12,
-        "SCAN_TR": 5.0,
-        "TRAINING_PEAK": 0.151621,
-    }
-    if not os.path.exists(path):
-        print(f"Warning: training info not found at {path}; using defaults.")
-        return defaults
-
-    with open(path, "r") as f:
-        text = f.read()
-
-    cfg = dict(defaults)
-
-    m = re.search(r"NUM_TIME_POINTS:\s*([0-9]+)", text)
-    if m:
-        cfg["NUM_TIMEPOINTS"] = int(m.group(1))
-
-    m = re.search(r"SCAN_TR\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)", text)
-    if m:
-        try:
-            cfg["SCAN_TR"] = float(m.group(1))
-        except ValueError:
-            pass
-
-    sched = _parse_schedule(text, "PYR_FA_SCHEDULE")
-    if sched:
-        cfg["PYR_FA_SCHEDULE"] = sched
-
-    sched = _parse_schedule(text, "LAC_FA_SCHEDULE")
-    if sched:
-        cfg["LAC_FA_SCHEDULE"] = sched
-
-    m = re.search(r"TRAINING_PEAK:\s*([0-9eE\.+-]+)", text)
-    if m:
-        try:
-            cfg["TRAINING_PEAK"] = float(m.group(1))
-        except ValueError:
-            pass
-
-    m = re.search(r"P_train:\s*([0-9eE\.+-]+)", text)
-    if m:
-        try:
-            cfg["P_TRAIN"] = float(m.group(1))
-        except ValueError:
-            pass
-        
-    m = re.search(r"percentile:\s*([0-9eE\.+-]+)", text)
-    if m:
-        try:
-            cfg["PERCENTILE"] = float(m.group(1))
-        except ValueError:
-            pass
-        
-    return cfg
-
-
-_cfg = _load_training_config(training_data_info_path)
+_cfg = load_training_config(training_data_info_path)
 NUM_TIMEPOINTS = _cfg["NUM_TIMEPOINTS"]
 PYR_FA_SCHEDULE = _cfg["PYR_FA_SCHEDULE"]
 LAC_FA_SCHEDULE = _cfg["LAC_FA_SCHEDULE"]
@@ -110,8 +35,12 @@ SCAN_TR = _cfg["SCAN_TR"]  # seconds
 # TRAINING_PEAK = _cfg["TRAINING_PEAK"]
 P_train = _cfg["P_TRAIN"]   
 percentile = _cfg["PERCENTILE"]  #
-TRAINING_PEAK = 1
-FINE_TUNE_FACTOR = 1  # If >0, we can apply a modest additional scaling to the inputs to better match the training peak, without losing the sim→clinic consistency of the original robust peak scaling. The model can learn to adjust for this during fine-tuning, and it can help if your data's robust peak is systematically much higher or lower than the training peak.
+KPL_MIN = _cfg["KPL_MIN"]
+KPL_MAX = _cfg["KPL_MAX"]
+KVE_MIN = _cfg["KVE_MIN"]
+KVE_MAX = _cfg["KVE_MAX"]
+VB_MIN = _cfg["VB_MIN"]
+VB_MAX = _cfg["VB_MAX"]
 
 from scipy.ndimage import gaussian_filter
 from datetime import datetime
@@ -155,7 +84,7 @@ legacy_peak_divisor = 1.0
 
 # If using VIF amplitude: the model expects signals scaled so that VIF amplitude ~= training_vif_amp
 # (Set training_vif_amp to the amplitude used during training; here we mirror training_peak for simplicity.)
-training_vif_amp = TRAINING_PEAK
+training_vif_amp = 1.0
 
 # === NAWM single-parameter calibration (scale-only) ===
 enable_nawm_calibration = False
@@ -389,8 +318,7 @@ def process_pair(idx, pyr_file, lac_file, nawm_file=None, vif_amp_lookup=None):
                     "include_bic_in_peak": include_bic_in_peak,
                     "robust_peak_value": float(rp),
                     "legacy_peak_divisor": float(legacy_peak_divisor),
-                    "applied_scale": float(scale),
-                    "training_peak": float(TRAINING_PEAK)})
+                    "applied_scale": float(scale)})
     elif amplitude_norm_mode == "vif_amp":  # VIF-based
         vif_amp = None
         if vif_amp_lookup is not None:
@@ -429,8 +357,13 @@ def process_pair(idx, pyr_file, lac_file, nawm_file=None, vif_amp_lookup=None):
     # === Lazy model init ===
     global model
     if not hasattr(process_pair, "_model"):
-        # model = HybridMultiHead(input_dim_raw=X_raw.shape[1], input_dim_norm=X_norm.shape[1], predict_kpb=True)
-        model = HybridMultiHead(input_dim_raw=NUM_TIMEPOINTS*2, input_dim_norm=NUM_TIMEPOINTS*2)
+        model = HybridMultiHead(input_dim_norm=NUM_TIMEPOINTS*2, 
+                        input_dim_raw=NUM_TIMEPOINTS*2,
+                        vb_range=(VB_MIN, VB_MAX),
+                        kpl_range=(KPL_MIN, KPL_MAX),
+                        kve_range=(KVE_MIN, KVE_MAX)
+                        )
+
         if os.path.exists(weights_path):
             model.load_state_dict(torch.load(weights_path, map_location=torch.device("cpu")))
         model.eval()
@@ -446,7 +379,7 @@ def process_pair(idx, pyr_file, lac_file, nawm_file=None, vif_amp_lookup=None):
     param_maps = {}
     for i, name in enumerate(param_names):
         param_map = pred[:, i].reshape(volume_shape)
-        param_maps[name] = param_map * FINE_TUNE_FACTOR
+        param_maps[name] = param_map 
 
     # Save pre-calibration neural network maps
     for name in param_names:
