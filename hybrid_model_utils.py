@@ -1,4 +1,3 @@
-
 import re
 
 import numpy as np
@@ -10,13 +9,6 @@ from sklearn.metrics import r2_score
 from pathlib import Path
 import os
 
-# KPL_MIN, KPL_MAX = 0.01, 0.20
-# KVE_MIN, KVE_MAX = 0.05, 0.45
-# VB_MIN,  VB_MAX  = 0.01, 0.50
-
-# KPL_MIN, KPL_MAX = 0.001, 0.20
-# KVE_MIN, KVE_MAX = 0.05, 0.45
-# VB_MIN,  VB_MAX =  0.03, 0.18
 
 class HybridMultiHead(nn.Module):
     def __init__(
@@ -82,20 +74,6 @@ def load_nifti_series(filepaths):
     data = [nib.load(str(p)).get_fdata() for p in filepaths]
     return np.stack(data, axis=-1)
 
-def preprocess_signals(raw_signals):
-    # raw_signals: (samples, timepoints, 2)
-    # norm = raw_signals / (np.max(raw_signals, axis=1, keepdims=True) + 1e-6)
-    norm = raw_signals/np.max(raw_signals)  # Normalize by global max
-    raw_flat = raw_signals.reshape(raw_signals.shape[0], -1)
-    norm_flat = norm.reshape(norm.shape[0], -1)
-    return norm_flat.astype(np.float32), raw_flat.astype(np.float32)
-
-def reshape_signals(raw_signals):
-    # raw_signals: (samples, timepoints, 2)
-    norm = raw_signals / (np.max(raw_signals, axis=1, keepdims=True) + 1e-6)
-    raw_flat = raw_signals.reshape(raw_signals.shape[0], -1)
-    norm_flat = norm.reshape(norm.shape[0], -1)  # Fix: use norm instead of raw_signals
-    return norm_flat.astype(np.float32), raw_flat.astype(np.float32)
 
 def evaluate_model(model, x_norm, x_raw, y_true=None):
     model.eval()
@@ -105,40 +83,9 @@ def evaluate_model(model, x_norm, x_raw, y_true=None):
         r2 = r2_score(y_true, pred, multioutput='raw_values')
         print(f"R² scores — kpl: {r2[0]:.3f}, kve: {r2[1]:.3f}, vb: {r2[2]:.3f}")
     return pred
+  
 
 def plot_prediction_scatter(y_true, y_pred, labels=["kpl", "kve", "vb"], saveName=None):
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(15, 4))
-    for i, label in enumerate(labels):
-        plt.subplot(1, 3, i+1)
-        plt.scatter(y_true[:, i], y_pred[:, i], alpha=0.6)
-        plt.plot([y_true[:, i].min(), y_true[:, i].max()],
-                 [y_true[:, i].min(), y_true[:, i].max()], 'r--')
-        r2 = r2_score(y_true[:, i], y_pred[:, i])
-        plt.title(f"{label} (R²={r2:.2f})")
-        plt.xlabel("True")
-        plt.ylabel("Predicted")
-    plt.tight_layout()
-    if saveName:
-        plt.savefig(saveName)
-    else:
-        plt.show()
-    plt.close()
-
-def plot_weight_histograms(model):
-    plt.figure(figsize=(10, 5))
-    for i, (name, param) in enumerate(model.named_parameters()):
-        if "weight" in name and param.requires_grad:
-            plt.subplot(2, 3, i+1)
-            plt.hist(param.detach().cpu().numpy().flatten(), bins=30)
-            plt.title(name)
-    plt.tight_layout()
-    plt.show()
-    
-    
-    
-
-def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveName=None):
     """
     Generates scatter plots of true vs. predicted values for multiple targets,
     after removing samples with NaN values in either y_true or y_pred for each target.
@@ -169,9 +116,6 @@ def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveNa
 
 
     fontsize = 20
-    # plt.rcParams.update({'font.size': fontsize, 'axes.titlesize': fontsize, 'axes.labelsize': fontsize,
-    #                      'xtick.labelsize': fontsize, 'ytick.labelsize': fontsize,
-    #                      'legend.fontsize': fontsize, 'figure.titlesize': fontsize})
     plt.rcParams.update({'font.size': fontsize, 'axes.titlesize': fontsize, 'axes.labelsize': fontsize,
                          'legend.fontsize': fontsize})
     for i, label in enumerate(labels):
@@ -190,16 +134,6 @@ def plot_prediction_scatter2(y_true, y_pred, labels=["kpl", "kve", "vb"], saveNa
         y_pred_cleaned = y_pred_col[valid_mask]
 
         if len(y_true_cleaned) < 2 or len(y_pred_cleaned) < 2:
-            # Not enough data points to plot or calculate R2 score reliably
-            # plt.title(f"{label} (Not enough data)")
-            # plt.xlabel("True")
-            # plt.ylabel("Predicted")
-            # plt.text(0.5, 0.5, 'Insufficient non-NaN data',
-            #          horizontalalignment='center',
-            #          verticalalignment='center',
-            #          transform=plt.gca().transAxes)
-            # print(f"Skipping plot for '{label}' due to insufficient non-NaN data points after cleaning.")
-            # continue # Skip to the next label
             y_true_cleaned = y_true_col
             y_pred_cleaned = y_pred_col
 
@@ -300,6 +234,7 @@ def compute_robust_alpha(
     X_target_raw,
     percentile=99.9,
     pyr_channel=0,
+    eps=1e-8,
     train_min_peak=None,
     target_min_peak=None,
 ):
@@ -370,9 +305,9 @@ def prepare_hybrid_inputs(
     pyr = X_raw[:, :, pyr_channel]                     # (N, T)
     pyr_peak = np.max(pyr, axis=1)                     # (N,)
     pyr_peak = np.maximum(pyr_peak, eps)
+    pyr_peak_max = float(np.max(pyr_peak))
 
-    # X_norm = X_raw / pyr_peak[:, None, None]           # (N, T, 2)
-    X_norm = X_raw 
+    X_norm = X_raw / pyr_peak[:, None, None]           # (N, T, 2)
     if flatten:
         X_raw_out = X_raw.reshape(X_raw.shape[0], -1).astype(np.float32)
         X_norm_out = X_norm.reshape(X_norm.shape[0], -1).astype(np.float32)
@@ -388,6 +323,7 @@ def prepare_hybrid_inputs(
         "pyr_peak_min": float(np.min(pyr_peak)),
         "pyr_peak_median": float(np.median(pyr_peak)),
         "pyr_peak_max": float(np.max(pyr_peak)),
+        "pyr_peak_max_global": float(pyr_peak_max),
     }
 
     # NOTE: order here is (norm, raw) to match existing code convention
@@ -452,17 +388,27 @@ def _parse_range(text, label):
 def load_training_config(path):
     """Load basic timing/flip info from the training report if present."""
     defaults = {
-        "NUM_TIMEPOINTS": 12,
-        "PYR_FA_SCHEDULE": [11.0] * 12,
-        "LAC_FA_SCHEDULE": [80.0] * 12,
-        "SCAN_TR": 5.0,
-        "TRAINING_PEAK": 0.151621,
+        "NUM_TIMEPOINTS": None,
+        "PYR_FA_SCHEDULE": None,
+        "LAC_FA_SCHEDULE": None,
+        "SCAN_TR": None,
+        "TRAINING_PEAK": None,
+        "TOTAL_SAMPLES": 1000000,
+        "N_EPOCHS": 1000,
         "KPL_MIN": None,
         "KPL_MAX": None,
         "KVE_MIN": None,
         "KVE_MAX": None,
         "VB_MIN": None,
         "VB_MAX": None,
+        "SNR_MIN": 20,
+        "SNR_MAX": 100,
+        "T1P_MIN": 30,
+        "T1P_MAX": 30,
+        "T1L_MIN": 25,
+        "T1L_MAX": 25,
+        "AIF_TYPE": None,
+        "INVIVO_DATA_PATH": None,
     }
     if not os.path.exists(path):
         print(f"Warning: training info not found at {path}; using defaults.")
@@ -476,6 +422,15 @@ def load_training_config(path):
     m = re.search(r"NUM_TIME_POINTS:\s*([0-9]+)", text)
     if m:
         cfg["NUM_TIMEPOINTS"] = int(m.group(1))
+        
+    m = re.search(r"TOTAL_SAMPLES:\s*([0-9]+)", text)
+    if m:
+        cfg["TOTAL_SAMPLES"] = int(m.group(1))
+
+    m = re.search(r"N_EPOCHS:\s*([0-9]+)", text)
+    if m:
+        cfg["N_EPOCHS"] = int(m.group(1))
+
 
     m = re.search(r"SCAN_TR\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)", text)
     if m:
@@ -517,12 +472,26 @@ def load_training_config(path):
         "kPL Range": ("KPL_MIN", "KPL_MAX"),
         "kVE Range": ("KVE_MIN", "KVE_MAX"),
         "vB Range": ("VB_MIN", "VB_MAX"),
+        "SNR Range": ("SNR_MIN", "SNR_MAX"),
+        "T1P Range": ("T1P_MIN", "T1P_MAX"),
+        "T1L Range": ("T1L_MIN", "T1L_MAX"),
     }
 
     for label, (lo_key, hi_key) in ranges.items():
         parsed = _parse_range(text, label)
         if parsed:
             cfg[lo_key], cfg[hi_key] = parsed
+
+    m = re.search(r"AIF_TYPE\s*[=:]\s*(\S+)", text, flags=re.IGNORECASE)
+    if m:
+        cfg["AIF_TYPE"] = m.group(1).strip()
         
+    m = re.search(r"protocol_name\s*[=:]\s*(\S+)", text, flags=re.IGNORECASE)
+    if m:
+        cfg["PROTOCOL_NAME"] = m.group(1).strip()
+
+    m = re.search(r"INVIVO_DATA_PATH\s*[=:]\s*(\S+)", text, flags=re.IGNORECASE)
+    if m:
+        cfg["INVIVO_DATA_PATH"] = m.group(1).strip()
     return cfg
     

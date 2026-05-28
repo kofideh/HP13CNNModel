@@ -1,2 +1,41 @@
-.conda/
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Training outputs (large generated artifacts)
+output/
+
+# Model weights (large binary files; track deliberately if needed)
+*.pth
+
+# Data (NIfTI files are large; track sample data deliberately)
+# *.nii.gz
+
+# Train/val/test index files (regenerated each run)
+train_val_test_indices_*.npz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
