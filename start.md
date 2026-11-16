@@ -1,0 +1,9 @@
+Yes. Start K0 by reproducing one noise-free pyruvate–lactate voxel from your existing hyperpolarized \(^{13}\)C MRI kinetic-modeling code. Use \(k_{PL}=0.0175\ \mathrm{s}^{-1}\) as a synthetic test value, and fit back only \(k_{PL}\).
+
+Your first action is to find the forward-model function and the human-brain acquisition configuration used in your NN/NLLS study. Start from the exact sample times and RF pulse schedule in the code. The nominal 5-second TR and 11° pyruvate / 80° lactate flip angles are useful cross-checks. Save the time vector, pulse timing, signal scaling, and fixed nuisance values with the run so you can reproduce it.
+
+Once you have those two pieces, run three checks in order:
+1. Generate the reference curves. Simulate pyruvate and lactate without noise. Fix the input function, delivery and vascular parameters, relaxation rates, and signal scaling at documented values. Also run a \(k_{PL}=0\) control. With zero initial lactate and no direct lactate input, its lactate signal should stay zero.
+2. Check the forward calculation independently. Compare both sampled curves against a second numerical implementation using the same equations and acquisition schedule. Check the RF convention explicitly, especially when the lactate signal is sampled relative to the 80° pulse’s depletion of longitudinal magnetization.
+3. Recover the known rate. Fit only \(k_{PL}\) from two starting values, one below and one above the truth. I’d use recovery within 1% of \(0.0175\ \mathrm{s}^{-1}\) as a provisional acceptance check for this noise-free case, and plot the residuals for both species.
+If you have time for only one thing today, locate the simulator and the acquisition configuration. Those are the two pieces to bring back here. The one-voxel check gives us a verified starting point for K0’s ground-truth maps and sensitivity tests.
